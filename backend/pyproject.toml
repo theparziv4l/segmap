@@ -7,6 +7,9 @@ dependencies = ["fastapi", "uvicorn[standard]", "asyncssh", "aiosqlite", "pydant
 [project.optional-dependencies]
 test = ["pytest", "pytest-asyncio", "httpx"]
 
+[tool.setuptools]
+packages = ["segmap"]  # backend/data/ sits next to it; never package it
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

@@ -22,12 +22,21 @@ Requirements: Python 3.12+, Node 18+, and on each test machine `nmap`, `iproute2
 sudo or nmap capabilities.
 
 ```bash
-./start.sh
+./start.sh            # build if missing or stale, start in background, print URL
+./start.sh status     # running? URL, PID, active scan jobs
+./start.sh logs       # follow the log
+./start.sh stop
+./start.sh --debug    # foreground with live debug logs (app + SSH); Ctrl+C stops
+./start.sh rebuild    # clean reinstall of venv + frontend build, then start (after git pull)
+./start.sh purge      # delete DB, secret key, logs and all build output (asks first)
 ```
 
-On the first run this creates the Python venv and builds the frontend. It then starts the app on
-`127.0.0.1` with a random free 5-digit port and prints the URL. To use a fixed port:
-`SEGMAP_PORT=12345 ./start.sh`.
+The app listens on `127.0.0.1`, on the last used port if it is free, otherwise a random 5-digit port
+(fixed port: `SEGMAP_PORT=12345 ./start.sh`). `start` rebuilds the frontend automatically when its sources
+are newer than the build, so `git pull && ./start.sh restart` is enough for most updates.
+
+Stopping the backend kills running scans and cancels the queue, so `stop`, `restart`, `rebuild` and `purge`
+refuse while jobs are running or queued; add `--force` to override.
 
 Tests:
 
