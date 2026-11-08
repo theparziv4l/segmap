@@ -149,7 +149,7 @@ async def test_kill_running_job_terms_process_group(env):
     await asyncio.sleep(0.05)
     j = await m.job(first)
     assert j["status"] == "killed"
-    kills = [c[1] for c in ssh.calls if "kill -" in c[1]]
+    kills = [c[1] for c in ssh.calls if "env kill -" in c[1]]
     assert kills[0] == f"sudo -k -S -p '' env kill -TERM -- -{j['pgid']}"
     assert any("kill -0" in k for k in kills)
     assert not any("kill -KILL" in k for k in kills)  # TERM was enough
@@ -171,7 +171,7 @@ async def test_kill_escalates_to_sigkill(env):
         await asyncio.sleep(0.01)
     await m.kill(res["jobs"][0])
     await wait_idle(m)
-    kills = [c[1] for c in ssh.calls if "kill -" in c[1]]
+    kills = [c[1] for c in ssh.calls if "env kill -" in c[1]]
     assert [k.split()[7] for k in kills] == ["-TERM", "-0", "-KILL"]
     assert (await m.job(res["jobs"][0]))["status"] == "killed"
 
@@ -259,21 +259,69 @@ async def test_egress_only_from_cde_zone_unless_explicit(env):
     await wait_idle(m)
 
 
-async def test_reconcile_after_restart(env):
+async def test_reconcile_after_restart_requeues_and_pauses(env):
     db, tmp = env
     ssh = FakeSSH(db)
-    await db.run("INSERT INTO jobs(id, machine_id, iface, check_name, status, pgid) VALUES "
-                 "(lower(hex(randomblob(16))), 1, 'eth0', 'syn', 'running', 4242)")
-    await db.run("INSERT INTO jobs(id, machine_id, iface, check_name, status, pgid) VALUES "
-                 "(lower(hex(randomblob(16))), 1, 'eth0', 'syn', 'running', NULL)")
-    await db.run("INSERT INTO jobs(id, machine_id, iface, check_name, status) VALUES ('c', 1, 'eth0', 'syn', 'queued')")
+    await db.run("INSERT INTO jobs(id, batch_id, seq, machine_id, iface, check_name, status, pgid, started_at, command) "
+                 "VALUES ('a', 1, 0, 1, 'eth0', 'syn', 'running', 4242, '2026-01-01', 'nmap ...')")
+    await db.run("INSERT INTO jobs(id, batch_id, seq, machine_id, iface, check_name, status) VALUES ('b', 1, 1, 1, 'eth0', 'syn', 'queued')")
     ssh.groups[4242] = asyncio.Event()  # still alive remotely
     await mgr(db, tmp, ssh).reconcile()
-    rows = {r["pgid"]: r for r in await db.all("SELECT * FROM jobs WHERE status != 'queued' AND id != 'c'")}
-    assert rows[4242]["status"] == "killed" and "still alive" in rows[4242]["error"]
-    assert rows[None]["status"] == "failed"
-    assert (await db.one("SELECT status FROM jobs WHERE id='c'"))["status"] == "killed"
-    assert ssh.groups[4242].is_set()
+    a = await db.one("SELECT * FROM jobs WHERE id='a'")
+    assert a["status"] == "queued" and a["started_at"] is None and a["command"] is None and a["pgid"] is None
+    assert (await db.one("SELECT status FROM jobs WHERE id='b'"))["status"] == "queued"
+    assert ssh.groups[4242].is_set()  # leftover remote process group killed
+    assert (await db.one("SELECT paused FROM machines WHERE id=1"))["paused"] == "backend restarted"
+    assert (await db.one("SELECT paused FROM machines WHERE id=2"))["paused"] is None  # no work, not paused
+
+
+async def test_pause_requeues_running_as_never_started_and_resume_continues(env):
+    db, tmp = env
+    ssh = FakeSSH(db, hold=True)
+    m = mgr(db, tmp, ssh)
+    res = await m.enqueue({"machine_id": 1, "type": "interface", "ifaces": ["eth0"], "checks": ["syn"]})
+    while not m.live or not next(iter(m.live.values()))["pgid"]:
+        await asyncio.sleep(0.01)
+    first = res["jobs"][0]
+    await m.pause(1)
+    await wait_idle(m)
+    j = await m.job(first)
+    assert j["status"] == "queued" and j["started_at"] is None and j["pgid"] is None and j["command"] is None
+    assert not (tmp / "logs" / f"{first}.log").exists()
+    assert ssh.started == [first]  # queue did not move on while paused
+    assert await statuses(db) == ["queued"] * 3
+    assert (await db.one("SELECT paused FROM machines WHERE id=1"))["paused"] == "paused by user"
+    ssh.hold = False
+    await m.resume(1)
+    await wait_idle(m)
+    assert await statuses(db) == ["done"] * 3
+    assert ssh.started == [first, *res["jobs"]]  # interrupted job ran again first, then the rest in order
+
+
+async def test_connection_loss_pauses_instead_of_failing_the_queue(env):
+    import asyncssh
+
+    db, tmp = env
+
+    class DroppingSSH(FakeSSH):
+        down = True
+
+        async def stream(self, mid, command, stdin, on_data, job_id=None):
+            if self.down:
+                await on_data("SEGMAP_PGID=777\nStarting Nmap\n")
+                raise asyncssh.ConnectionLost("network down")
+            return await super().stream(mid, command, stdin, on_data, job_id)
+
+    ssh = DroppingSSH(db)
+    m = mgr(db, tmp, ssh)
+    await m.enqueue({"machine_id": 1, "type": "interface", "ifaces": ["eth0"], "checks": ["syn"]})
+    await wait_idle(m)
+    assert await statuses(db) == ["queued"] * 3  # nothing failed, nothing lost
+    assert "connection lost" in (await db.one("SELECT paused FROM machines WHERE id=1"))["paused"]
+    ssh.down = False  # VPN back
+    await m.resume(1)
+    await wait_idle(m)
+    assert await statuses(db) == ["done"] * 3
 
 
 async def test_audit_snapshots_zone_and_tag_at_run_time(env):

@@ -30,7 +30,7 @@ def test_ifaces_text_fallback():
 
 def test_prereq_and_mode():
     out = ("uid=1000\nnmap=/usr/bin/nmap\nnmapver=Nmap version 7.94SVN ( https://nmap.org )\nip=/usr/sbin/ip\n"
-           "setsid=/usr/bin/setsid\ncaps=\n")
+           "setsid=/usr/bin/setsid\ntimeout=/usr/bin/timeout\ncaps=\n")
     p = ssh.parse_prereq(out)
     assert p["uid"] == 1000 and p["nmap_version"].startswith("Nmap version 7.94")
     assert ssh.decide_mode(p, sudo_ok=True) == ("sudo", [])
@@ -40,3 +40,5 @@ def test_prereq_and_mode():
     assert ssh.decide_mode({**p, "uid": 0}, False)[0] == "root"
     mode, errs = ssh.decide_mode({**p, "uid": 0, "nmap": ""}, False)
     assert mode is None and errs == ["nmap not found on PATH"]
+    # the scan wrapper's dead-man switch needs coreutils timeout
+    assert ssh.decide_mode({**p, "uid": 0, "timeout": ""}, False) == (None, ["timeout not found on PATH"])

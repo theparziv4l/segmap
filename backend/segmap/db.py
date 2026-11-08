@@ -38,9 +38,12 @@ CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, ts TEXT, actor TEXT, ma
 CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT);
 """
 
-# Run-time snapshots: audit evidence must show zone/tag/IP as they were when the command ran, and must
-# survive later scope retagging, interface changes and machine deletion (jobs cascade-delete with machines).
-SNAPSHOT_COLS = {
+# Columns added after the first release (TEXT, add-only migration in open()).
+# jobs/audit: run-time snapshots, so audit evidence shows zone/tag/IP as they were when the command ran and
+# survives later scope retagging, interface changes and machine deletion (jobs cascade-delete with machines).
+# machines.paused: NULL = queue runs, otherwise why it is paused (user, connection lost, backend restart).
+ADD_COLS = {
+    "machines": ("paused",),
     "jobs": ("source_ip", "source_zone", "target_tag"),
     "audit": ("machine_name", "iface", "source_ip", "source_zone", "check_name", "block24", "target_tag", "targets"),
 }
@@ -70,7 +73,7 @@ class DB:
         self.conn = await aiosqlite.connect(self.path)
         self.conn.row_factory = aiosqlite.Row
         await self.conn.executescript(SCHEMA)
-        for table, cols in SNAPSHOT_COLS.items():  # add-only migration for DBs created before these columns
+        for table, cols in ADD_COLS.items():  # add-only migration for DBs created before these columns
             have = {r["name"] for r in await self.all(f"PRAGMA table_info({table})")}
             for c in cols:
                 if c not in have:

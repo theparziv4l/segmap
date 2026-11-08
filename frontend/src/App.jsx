@@ -18,6 +18,7 @@ export default function App() {
       onOpen: init, // resync after reconnect (queue survives reloads and restarts)
       job: (m) => upsertJob(m.job),
       graph: () => loadGraphSoon(),
+      machines: () => loadState(), // paused / resumed / connection lost
     })
   }, [])
 

@@ -117,8 +117,16 @@ Argument building stays in `commands.py`.
   list, targets parsed with `ipaddress`, ports/timing/options validated), then `shlex.join`ed. The scan's stdin is
   `/dev/null`, so a sudo password can never reach nmap's interactive keys.
 - Every remote exec, including prereq, kill, cat and rm, is written to the audit log (time, OS user, machine, command).
-- After a backend restart, jobs still marked running are reconciled: if the process group is alive it is killed, otherwise
-  the job is marked failed. Queued jobs are cancelled and never auto-started.
+- The queue lives only on the SegMap host. Nothing runs on a test machine unless the backend is connected to it: the scan
+  wrapper has a dead-man switch (the backend sends a heartbeat byte every 15 s over the SSH channel; on channel close or
+  90 s without a heartbeat the wrapper kills the scan), so a lost VPN, crashed backend or rebooted host never leaves
+  nmap running. The prerequisite check therefore also requires coreutils `timeout`.
+- Pause (per machine or all) kills the running scan and puts it back in the queue as if it never started (its partial
+  log and findings are discarded; the audit log keeps the commands that really ran). The queue then waits for Resume.
+- Losing the SSH connection pauses that machine instead of failing the rest of its queue. Resume reconnects on demand.
+- Stopping the backend pauses every queue. After a restart, a job that was running goes back to the queue (a leftover
+  remote process group is killed if reachable) and machines with queued work stay paused: scans never start on their
+  own after a restart.
 
 ## Not in v1
 

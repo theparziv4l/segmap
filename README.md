@@ -13,7 +13,7 @@ SYN proxies, proxy ARP and ICMP-answering middleboxes are flagged, never drawn a
 - Scope by CIDR / IP / range, split into /24 boxes, one tag per /24
 - Checks: TCP SYN, ICMP, UDP, insecure services (2.2.x / 8.3.2), egress from CDE (1.3.2)
 - Graph colored by severity (source zone × target tag), edge details with per-host evidence
-- Job queue with live terminal output, per-job kill and master kill
+- Job queue with live terminal output, pause/resume, per-job kill and master kill; survives restarts and lost connections
 - Exports: PNG/SVG, findings JSON/CSV, scan timeline CSV (11.5.1), audit log CSV
 
 ## Quick start
@@ -35,8 +35,10 @@ The app listens on `127.0.0.1`, on the last used port if it is free, otherwise a
 (fixed port: `SEGMAP_PORT=12345 ./start.sh`). `start` rebuilds the frontend automatically when its sources
 are newer than the build, so `git pull && ./start.sh restart` is enough for most updates.
 
-Stopping the backend kills running scans and cancels the queue, so `stop`, `restart`, `rebuild` and `purge`
-refuse while jobs are running or queued; add `--force` to override.
+Queues live only on this host. Stopping the backend pauses them (a running scan goes back to the queue as never
+started) and they wait for **Resume** after the next start; the same happens per machine when its SSH connection drops.
+`stop`, `restart`, `rebuild` and `purge` refuse while a scan is running, to avoid throwing that work away; add
+`--force` to override.
 
 Tests:
 

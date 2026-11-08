@@ -1,4 +1,7 @@
 import shlex
+import shutil
+import subprocess
+import time
 
 import pytest
 
@@ -108,7 +111,7 @@ def test_wrap_sudo_quoted_and_stdin_detached():
     parts = shlex.split(s)
     assert parts[:5] == ["sudo", "-k", "-S", "-p", ""]
     assert parts[5:7] == ["setsid", "-w"]
-    assert "echo SEGMAP_PGID=$$" in parts[9] and "</dev/null" in parts[9]
+    assert "echo SEGMAP_PGID=$$" in parts[9] and '"$@" </dev/null' in parts[9]
     assert parts[11:] == argv
     assert c.wrap_scan(argv, "root").startswith("setsid -w sh -c")
 
@@ -132,3 +135,29 @@ def test_egress_target_must_be_ip():
     argv = c.nmap_egress("eth0", "203.0.113.10", 3, "all", JOB, known_ifaces=IFACES)
     assert argv[-1] == "203.0.113.10" and "-p-" in argv
     assert argv[argv.index("--script") + 1] == "banner"
+
+
+@pytest.mark.skipif(not (shutil.which("setsid") and shutil.which("timeout")), reason="needs util-linux setsid + coreutils timeout")
+def test_wrapper_dead_man_switch():
+    """Real /bin/sh: exit code passes through; closed channel or missing heartbeat kills the scan."""
+    def run(scan, feed):
+        t = time.monotonic()
+        p = subprocess.Popen(["setsid", "-w", "sh", "-c", c.wrap_sh(timeout=2), "segmap", *scan],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        feed(p)
+        out = p.stdout.read().decode()
+        return p.wait(), time.monotonic() - t, out
+
+    def beat(p, n):
+        for _ in range(n):
+            p.stdin.write(b"."); p.stdin.flush(); time.sleep(0.5)
+
+    rc, dt, out = run(["sh", "-c", "echo scanning; exit 3"], lambda p: beat(p, 1))
+    assert rc == 3 and "SEGMAP_PGID=" in out and "scanning" in out
+    rc, dt, _ = run(["sh", "-c", "sleep 3.5"], lambda p: beat(p, 9))  # outlives the timeout while beating
+    assert rc == 0
+    rc, dt, _ = run(["sleep", "30"], lambda p: (time.sleep(0.3), p.stdin.close()))  # channel closed
+    assert rc != 0 and dt < 3
+    held = []
+    rc, dt, _ = run(["sleep", "30"], held.append)  # stdin open, no heartbeat
+    assert rc != 0 and 1.5 < dt < 6

@@ -33,7 +33,7 @@ function Machines() {
 }
 
 function Machine({ m }) {
-  const { loadState, loadGraph, notify, tags, selected, run } = useStore()
+  const { loadState, loadGraph, notify, tags, selected, run, jobs } = useStore()
   const [busy, setBusy] = useState(false)
   const [trust, setTrust] = useState(null)
   const [showHidden, setShowHidden] = useState(false)
@@ -54,6 +54,7 @@ function Machine({ m }) {
     if (r.needs_trust) setTrust(r)
   })
   const patch = (iid, body) => act(() => api(`/interfaces/${iid}`, { method: 'PATCH', body }))
+  const work = Object.values(jobs).filter((j) => j.machine_id === m.id && (j.status === 'queued' || j.status === 'running')).length
   const visible = m.interfaces.filter((i) => !i.hidden)
   const hidden = m.interfaces.filter((i) => i.hidden)
   const toggleSel = (name) => useStore.setState((s) => ({ selected: { ...s.selected, [`${m.id}|${name}`]: !s.selected[`${m.id}|${name}`] } }))
@@ -69,6 +70,13 @@ function Machine({ m }) {
       {m.prereq && (
         <div className="muted small">
           {m.prereq.nmap_version || 'nmap ?'} · priv: <b>{m.mode || 'none'}</b>
+        </div>
+      )}
+      {m.paused && (
+        <div className="note row between">
+          <span>⏸ <b>Paused</b>{work ? ` · ${work} queued` : ''} <span className="muted small">({m.paused})</span></span>
+          <button className="primary" onClick={() => act(() => api(`/machines/${m.id}/resume`, { method: 'POST' }))} disabled={busy}
+            title="Reconnects on demand and continues the queue">▶ Resume</button>
         </div>
       )}
       {m.status === 'hostkey_changed' && <div className="alert">⚠ HOST KEY CHANGED — possible man-in-the-middle. Verify out of band before trusting.</div>}
@@ -87,6 +95,8 @@ function Machine({ m }) {
         <button className="primary" onClick={connect} disabled={busy}>{busy ? '…' : m.mode ? 'Reconnect / re-check' : 'Connect'}</button>
         <button onClick={() => run([{ machine_id: m.id, type: 'machine', ifaces: visible.map((i) => i.name) }])} disabled={!m.mode || !visible.length}
           title="All interfaces of this machine, sequentially">▶ Run machine</button>
+        {!m.paused && work > 0 && <button onClick={() => act(() => api(`/machines/${m.id}/pause`, { method: 'POST' }))}
+          title="Kill the running scan (it goes back to the queue as never started) and hold the queue">⏸ Pause</button>}
         <button className="ghost" onClick={() => act(() => api(`/machines/${m.id}`, { method: 'DELETE' }))} title="Remove machine">✕</button>
       </div>
       {visible.map((i) => (

@@ -14,9 +14,22 @@ DEFAULT_TCP_PORTS = ("21,22,23,25,53,80,88,110,111,135,139,143,389,443,445,465,5
 DEFAULT_UDP_PORTS = "53,123,161,500"
 SERVICE_SCRIPTS = ("ftp-anon,snmp-info,smb-protocols,vnc-info,x11-access,nfs-showmount,redis-info,"
                    "mongodb-info,http-title,ssh2-enum-algos,rdp-enum-encryption")
-# Wrapper: new session => sh pid == pgid; print it, then exec the scan (stdin detached so a
-# sudo password never reaches nmap's interactive keys). -w keeps setsid in the foreground.
-WRAP_SH = 'echo SEGMAP_PGID=$$; exec "$@" </dev/null'
+# Wrapper: new session => sh pid == pgid; print it, run the scan with stdin detached (a sudo password never
+# reaches nmap's interactive keys). -w keeps setsid in the foreground.
+# Dead-man switch: the backend writes a heartbeat byte to stdin every HEARTBEAT_S. If none arrives for
+# HEARTBEAT_TIMEOUT_S, or stdin hits EOF (channel closed), the watcher kills the scan, so nothing keeps
+# running on the test machine once the backend is gone (even if sshd never notices a silent network drop).
+HEARTBEAT_S = 15
+HEARTBEAT_TIMEOUT_S = 90
+
+
+def wrap_sh(timeout: int = HEARTBEAT_TIMEOUT_S) -> str:
+    return ('echo SEGMAP_PGID=$$; exec 3<&0; "$@" </dev/null 3<&- & s=$!; '
+            f'{{ while [ -n "$(timeout {int(timeout)} head -c1)" ]; do :; done; kill -TERM $s; sleep 5; kill -KILL $s; }} '
+            '<&3 >/dev/null 2>&1 & w=$!; exec 3<&-; wait $s; rc=$?; kill $w 2>/dev/null; exit $rc')
+
+
+WRAP_SH = wrap_sh()
 SUDO = ["sudo", "-k", "-S", "-p", ""]
 
 
@@ -190,7 +203,7 @@ def needs_sudo_input(mode: str) -> bool:
 PREREQ_CMD = (
     'echo "uid=$(id -u)"; N="$(command -v nmap)"; echo "nmap=$N"; '
     'echo "nmapver=$(nmap --version 2>/dev/null | head -1)"; echo "ip=$(command -v ip)"; '
-    'echo "setsid=$(command -v setsid)"; G="$(command -v getcap || echo /sbin/getcap)"; '
+    'echo "setsid=$(command -v setsid)"; echo "timeout=$(command -v timeout)"; G="$(command -v getcap || echo /sbin/getcap)"; '
     'echo "caps=$("$G" "$(readlink -f "$N")" /usr/lib/nmap/nmap 2>/dev/null | tr \'\\n\' \' \')"')
 SUDO_TEST_CMD = shlex.join(SUDO + ["true"])
 IFACES_JSON_CMD = "ip -j addr show"

@@ -105,13 +105,24 @@ class SSHManager:
         async with c.create_process(command, stderr=asyncssh.STDOUT) as proc:
             if stdin:
                 proc.stdin.write(stdin)
-            proc.stdin.write_eof()
-            while True:
-                data = await proc.stdout.read(8192)
-                if not data:
-                    break
-                await on_data(data)
-            await proc.wait()
+
+            async def heartbeat():  # feeds the wrapper's dead-man switch; stdin stays open on purpose
+                while True:
+                    await asyncio.sleep(cmd.HEARTBEAT_S)
+                    proc.stdin.write(".")
+
+            beat = asyncio.create_task(heartbeat())
+            try:
+                while True:
+                    data = await proc.stdout.read(8192)
+                    if not data:
+                        break
+                    await on_data(data)
+                await proc.wait()
+            finally:
+                beat.cancel()
+            if proc.exit_status is None and proc.exit_signal is None:
+                raise asyncssh.ConnectionLost("SSH channel closed without an exit status")
             return proc.exit_status if proc.exit_status is not None else -1
 
 
@@ -123,11 +134,12 @@ def fingerprint(pub: str | None) -> str:
 def parse_prereq(out: str) -> dict:
     kv = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
     return {"uid": int(kv.get("uid") or -1), "nmap": kv.get("nmap", ""), "nmap_version": kv.get("nmapver", ""),
-            "ip": kv.get("ip", ""), "setsid": kv.get("setsid", ""), "caps": kv.get("caps", "")}
+            "ip": kv.get("ip", ""), "setsid": kv.get("setsid", ""), "timeout": kv.get("timeout", ""),
+            "caps": kv.get("caps", "")}
 
 
 def decide_mode(p: dict, sudo_ok: bool) -> tuple[str | None, list[str]]:
-    errors = [f"{tool} not found on PATH" for tool in ("nmap", "ip", "setsid") if not p[tool]]
+    errors = [f"{tool} not found on PATH" for tool in ("nmap", "ip", "setsid", "timeout") if not p[tool]]
     if p["uid"] == 0:
         mode = "root"
     elif sudo_ok:

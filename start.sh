@@ -3,14 +3,14 @@
 #
 #   ./start.sh [start]     build if missing/stale, run in background, print URL
 #   ./start.sh --debug     same, but in the foreground with debug logs (Ctrl+C stops)
-#   ./start.sh stop        stop the backend (running scans are killed on shutdown)
+#   ./start.sh stop        stop the backend (queues are paused and kept; a running scan is interrupted)
 #   ./start.sh restart     stop + start
 #   ./start.sh status      running? URL, PID, active jobs
 #   ./start.sh logs        follow the background log
 #   ./start.sh rebuild     clean reinstall of backend venv + frontend build, then start (use after git pull)
 #   ./start.sh purge       delete database, secret key, logs and all build output (asks first)
 #
-#   --force   stop/restart/rebuild/purge even while scans are running or queued
+#   --force   stop/restart/rebuild/purge even while a scan is running
 #   --yes     purge without the confirmation prompt
 #   SEGMAP_PORT=12345      fixed port (default: last used port if free, else random 5-digit)
 set -euo pipefail
@@ -39,17 +39,18 @@ url() { echo "http://${SEGMAP_HOST:-127.0.0.1}:$(cat "$PORTF")"; }
 
 active_jobs() {
   curl -fsS "$(url)/api/state" 2>/dev/null |
-    "$PY" -c 'import json,sys; print(sum(j["status"] in ("running","queued") for j in json.load(sys.stdin)["jobs"]))' 2>/dev/null ||
+    "$PY" -c 'import json,sys; print(sum(j["status"] == "running" for j in json.load(sys.stdin)["jobs"]))' 2>/dev/null ||
     echo 0
 }
 
-# Shutting the backend down kills running scans and cancels the queue; never do that by accident.
+# Shutdown pauses every queue (kept for Resume) but interrupts a running scan, which then restarts from
+# scratch on Resume; don't throw that work away by accident.
 guard() {
   running || return 0
   local n
   n=$(active_jobs)
   if [ "$n" -gt 0 ] && [ -z "$force" ]; then
-    echo "$n scan job(s) running or queued; stopping the backend kills them. Wait for them, or add --force." >&2
+    echo "$n scan(s) running; stopping interrupts them (queues are kept, paused). Wait, or add --force." >&2
     exit 1
   fi
 }
@@ -97,7 +98,7 @@ do_start() {
   export SEGMAP_PORT
   echo "$SEGMAP_PORT" >"$PORTF"
   if [ -n "$debug" ]; then
-    echo "SegMap (debug, Ctrl+C stops and kills running scans): $(url)"
+    echo "SegMap (debug, Ctrl+C stops; queues are kept, paused): $(url)"
     cd backend && SEGMAP_LOG_LEVEL=debug exec "$PY" -m segmap
   fi
   [ -f "$LOG" ] && mv "$LOG" "$LOG.1"
@@ -136,7 +137,7 @@ case $cmd in
   stop) do_stop ;;
   restart) guard; do_stop; do_start ;;
   status)
-    if running; then echo "running: $(url)  pid $(cat "$PIDF")  active jobs: $(active_jobs)"; else echo "stopped"; fi ;;
+    if running; then echo "running: $(url)  pid $(cat "$PIDF")  scans running: $(active_jobs)"; else echo "stopped"; fi ;;
   logs)
     [ -f "$LOG" ] || { echo "no log yet ($LOG)" >&2; exit 1; }
     tail -n 100 -f "$LOG" ;;

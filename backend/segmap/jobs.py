@@ -1,4 +1,5 @@
-"""Job queue: one sequential worker per machine, machines in parallel; streaming; kill; reconcile."""
+"""Job queue (lives only on this host): one sequential worker per machine, machines in parallel; streaming;
+kill; pause/resume (a paused or interrupted job goes back to the queue as if it never started); reconcile."""
 import asyncio
 import ipaddress as ip
 import re
@@ -7,11 +8,16 @@ import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import asyncssh
+
 from . import commands as cmd
 from . import targets as tg
 from .checks import BLOCK_ORDER, REGISTRY, process
 from .db import DB, dumps, loads, now
+from .ssh import HostKeyError
 
+# talking to the test machine failed: pause its queue instead of failing every remaining job
+CONNECTION_ERRORS = (asyncssh.Error, OSError, HostKeyError)
 PGID_RE = re.compile(r"SEGMAP_PGID=(\d+)\r?\n")
 # rough seconds per (host x port) probe, per -T template; ponytail: crude, good enough to warn on T0/T1
 PER_PROBE = {0: 300.0, 1: 15.0, 2: 0.4, 3: 0.01, 4: 0.005, 5: 0.003}
@@ -129,8 +135,8 @@ class JobManager:
             self.workers[mid] = asyncio.create_task(self._worker(mid))
 
     async def _next(self, mid):
-        return await self.db.one("SELECT * FROM jobs WHERE machine_id=? AND status='queued' "
-                                 "ORDER BY batch_id, seq LIMIT 1", (mid,))
+        return await self.db.one("SELECT j.* FROM jobs j JOIN machines m ON m.id=j.machine_id WHERE j.machine_id=? "
+                                 "AND j.status='queued' AND m.paused IS NULL ORDER BY j.batch_id, j.seq LIMIT 1", (mid,))
 
     async def _worker(self, mid: int):
         while True:
@@ -158,7 +164,7 @@ class JobManager:
 
     async def _run(self, job: dict):
         jid, mid = job["id"], job["machine_id"]
-        live = self.live[jid] = {"pgid": None, "kill": False, "task": None, "machine_id": mid}
+        live = self.live[jid] = {"pgid": None, "kill": False, "requeue": False, "task": None, "machine_id": mid}
         try:
             m = await self.ssh.machine(mid)
             if not m["mode"]:
@@ -169,6 +175,9 @@ class JobManager:
                 await self._finish(jid, "done", error="skipped: no strong open ports from earlier phases")
                 return
             sudo = await self.ssh.sudo_input(mid)
+            if live["kill"]:  # paused/killed before the command was sent
+                await (self._requeue(jid) if live["requeue"] else self._finish(jid, "killed", error="cancelled before start"))
+                return
             scope = await self.scope()
             src = await self.db.one("SELECT ipv4 FROM interfaces WHERE machine_id=? AND name=?", (mid, job["iface"]))
             await self.db.run(
@@ -191,6 +200,9 @@ class JobManager:
                 else:
                     error = f"could not read remote XML: {err.strip()[:200]}"
             await self.ssh.run(mid, cmd.rm_cmd(jid, m["mode"]), stdin=sudo, job_id=jid)
+            if live["requeue"]:
+                await self._requeue(jid)
+                return
             if rows:
                 ts = now()
                 await self.db.many(
@@ -205,9 +217,18 @@ class JobManager:
         except asyncio.CancelledError:
             if not live["kill"]:
                 raise
-            await self._finish(jid, "killed", error="killed (channel closed)")
+            await (self._requeue(jid) if live["requeue"] else self._finish(jid, "killed", error="killed (channel closed)"))
         except Exception as e:
-            await self._finish(jid, "killed" if live["kill"] else "failed", error=f"{type(e).__name__}: {e}")
+            if live["requeue"]:
+                await self._requeue(jid)
+            elif live["kill"]:
+                await self._finish(jid, "killed", error=f"{type(e).__name__}: {e}")
+            elif isinstance(e, CONNECTION_ERRORS):
+                # the wrapper's dead-man switch stops the remote scan; keep the queue for a later Resume
+                await self._requeue(jid)
+                await self.set_paused(mid, f"connection lost: {type(e).__name__}: {e}"[:300])
+            else:
+                await self._finish(jid, "failed", error=f"{type(e).__name__}: {e}")
         finally:
             self.live.pop(jid, None)
 
@@ -249,6 +270,47 @@ class JobManager:
         await self.db.run("UPDATE jobs SET status=?, exit_code=?, flags=?, error=?, finished_at=? WHERE id=?",
                           (status, rc, dumps(flags or []), error, now(), jid))
         await self.emit_job(jid)
+
+    async def _requeue(self, jid):
+        """Back to the queue as if it never started. Audit rows stay: those commands really ran."""
+        await self.db.run("DELETE FROM findings WHERE job_id=?", (jid,))
+        await self.db.run("UPDATE jobs SET status='queued', argv=NULL, command=NULL, pgid=NULL, exit_code=NULL, "
+                          "started_at=NULL, finished_at=NULL, flags=NULL, error=NULL, source_ip=NULL, source_zone=NULL, "
+                          "target_tag=NULL WHERE id=?", (jid,))
+        (self.log_dir / f"{jid}.log").unlink(missing_ok=True)
+        await self.emit_job(jid)
+
+    # ---------- pause / resume ----------
+    async def set_paused(self, mid: int, reason: str | None):
+        await self.db.run("UPDATE machines SET paused=? WHERE id=?", (reason, mid))
+        await self.hub.send({"type": "machines"})
+
+    async def pause(self, mid: int, reason: str = "paused by user"):
+        """Stop the machine's queue: the running command is killed and requeued as never started."""
+        await self.set_paused(mid, reason)
+        await asyncio.gather(*(self._interrupt(l) for l in list(self.live.values()) if l["machine_id"] == mid),
+                             return_exceptions=True)
+
+    async def resume(self, mid: int):
+        await self.set_paused(mid, None)
+        self.kick(mid)
+
+    async def busy_machines(self) -> list[int]:
+        return [r["machine_id"] for r in await self.db.all(
+            "SELECT DISTINCT machine_id FROM jobs WHERE status IN ('queued','running') AND machine_id IS NOT NULL")]
+
+    async def pause_all(self, reason: str = "paused by user"):
+        """Pause every machine with queued or running work; waits until interrupted jobs are requeued."""
+        await asyncio.gather(*(self.pause(mid, reason) for mid in await self.busy_machines()), return_exceptions=True)
+        await asyncio.gather(*list(self.workers.values()), return_exceptions=True)
+
+    async def resume_all(self):
+        for r in await self.db.all("SELECT id FROM machines WHERE paused IS NOT NULL"):
+            await self.resume(r["id"])
+
+    async def _interrupt(self, live: dict):
+        live["requeue"] = True
+        await self._terminate(live)
 
     async def emit_job(self, jid):
         await self.hub.send({"type": "job", "job": await self.job(jid)})
@@ -300,7 +362,8 @@ class JobManager:
         elif jid in self.live:
             await self._terminate(self.live[jid])
         elif j["status"] == "running":
-            await self.reconcile([jid])
+            await self._kill_stale(await self.db.one("SELECT * FROM jobs WHERE id=?", (jid,)))
+            await self._finish(jid, "killed", error="killed")
 
     async def master_kill(self):
         queued = await self.db.all("SELECT id FROM jobs WHERE status='queued'")
@@ -312,34 +375,31 @@ class JobManager:
         return {"cancelled": len(queued)}
 
     # ---------- restart reconciliation ----------
-    async def reconcile(self, only: list[str] | None = None):
-        rows = await self.db.all("SELECT * FROM jobs WHERE status='running'")
-        for j in rows:
-            if only and j["id"] not in only:
-                continue
-            try:
-                m = await self.ssh.machine(j["machine_id"])
-                if j["pgid"] and m["mode"]:
-                    sudo = await self.ssh.sudo_input(j["machine_id"])
-                    rc, _, _ = await self.ssh.run(j["machine_id"], cmd.kill_cmd(j["pgid"], "0", m["mode"]), stdin=sudo)
-                    if rc == 0:
-                        await self._signal(j["machine_id"], j["pgid"])
-                        status, err = "killed", f"process group {j['pgid']} still alive after backend restart: killed"
-                    else:
-                        status, err = "failed", "backend restarted while running; remote process gone"
-                    try:
-                        await self.ssh.run(j["machine_id"], cmd.rm_cmd(j["id"], m["mode"]), stdin=sudo, job_id=j["id"])
-                    except Exception:
-                        pass  # leftover /tmp file is harmless; status matters more
-                else:
-                    status, err = "failed", "backend restarted before the remote process reported its PGID"
-            except Exception as e:
-                status, err = "failed", f"backend restarted; could not verify remote process (pgid {j['pgid']}): {e}"
-            await self._finish(j["id"], status, error=err)
-        if only is None:
-            # never auto-launch scans after a restart
-            await self.db.run("UPDATE jobs SET status='killed', error='cancelled: backend restarted', finished_at=? "
-                              "WHERE status='queued'", (now(),))
+    async def _kill_stale(self, j: dict):
+        """Best effort: kill a remote process group left from before a restart (normally the dead-man switch
+        already did, the moment the old SSH channel closed)."""
+        if not j["pgid"]:
+            return
+        try:
+            m = await self.ssh.machine(j["machine_id"])
+            if m["mode"]:
+                sudo = await self.ssh.sudo_input(j["machine_id"])
+                rc, _, _ = await self.ssh.run(j["machine_id"], cmd.kill_cmd(j["pgid"], "0", m["mode"]), stdin=sudo,
+                                              timeout=20)
+                if rc == 0:
+                    await self._signal(j["machine_id"], j["pgid"])
+        except Exception:
+            pass  # unreachable: the dead-man switch kills it within HEARTBEAT_TIMEOUT_S
+
+    async def reconcile(self):
+        """After a backend (re)start: interrupted jobs go back to the queue as never started, and every machine
+        with queued work stays paused until the user resumes it. Scans never start on their own after a restart."""
+        for j in await self.db.all("SELECT * FROM jobs WHERE status='running'"):
+            await self._kill_stale(j)
+            await self._requeue(j["id"])
+        for mid in await self.busy_machines():
+            if (await self.db.one("SELECT paused FROM machines WHERE id=?", (mid,)) or {}).get("paused") is None:
+                await self.set_paused(mid, "backend restarted")
 
 
 def estimate(plan, params) -> float:

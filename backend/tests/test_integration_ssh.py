@@ -120,3 +120,30 @@ async def test_e2e_kill_really_terminates_remote_nmap(stack):
     await _wait(jobs, 30)
     assert (await jobs.job(jid))["status"] == "killed"
     assert subprocess.run(["pgrep", "-g", str(pgid)], capture_output=True).returncode == 1  # group gone
+
+
+async def test_e2e_connection_loss_kills_remote_nmap_and_pauses(stack):
+    db, ssh, jobs, mid, key = stack
+    await _connect(db, ssh, mid, key)
+    iface = sorted(r["name"] for r in await db.all("SELECT name FROM interfaces WHERE machine_id=?", (mid,)))[0]
+    await db.run("INSERT INTO scope(cidr, tag) VALUES ('192.0.2.0/30', 'out-of-scope')")
+    await db.kv_set("profile", {"timing": 1, "tcp_ports": "1-1000"})  # T1: would take hours
+    res = await jobs.enqueue({"machine_id": mid, "ifaces": [iface], "checks": ["syn"]})
+    jid = res["jobs"][0]
+    for _ in range(200):
+        live = jobs.live.get(jid)
+        if live and live["pgid"]:
+            break
+        await asyncio.sleep(0.05)
+    pgid = jobs.live[jid]["pgid"]
+    assert subprocess.run(["pgrep", "-g", str(pgid)], capture_output=True).returncode == 0
+    ssh.conns[mid].abort()  # connection drops mid-scan
+    await _wait(jobs, 30)
+    j = await jobs.job(jid)
+    assert j["status"] == "queued" and j["started_at"] is None  # back in the queue as never started
+    assert (await ssh.machine(mid))["paused"].startswith("connection lost")
+    for _ in range(50):  # dead-man switch: channel closed -> remote scan killed
+        if subprocess.run(["pgrep", "-g", str(pgid)], capture_output=True).returncode == 1:
+            break
+        await asyncio.sleep(0.1)
+    assert subprocess.run(["pgrep", "-g", str(pgid)], capture_output=True).returncode == 1

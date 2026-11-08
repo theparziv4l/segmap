@@ -55,7 +55,8 @@ async def lifespan(app):
     yield
     reconcile.cancel()
     try:
-        await asyncio.wait_for(S.jobs.master_kill(), 30)  # never leave scans running behind us
+        # never leave scans running behind us; the queue itself is kept (paused) for a Resume after restart
+        await asyncio.wait_for(S.jobs.pause_all("backend stopped"), 30)
     except Exception:
         pass
     await S.db.close()
@@ -167,7 +168,7 @@ async def machine_out(mid: int) -> dict:
     return {
         "id": m["id"], "name": m["name"], "host": m["host"], "port": m["port"], "username": m["username"],
         "auth": "key" if sec.get("key") else "password", "has_sudo_password": bool(sec.get("sudo_password")),
-        "status": m["status"], "error": m["error"], "mode": m["mode"],
+        "status": m["status"], "error": m["error"], "mode": m["mode"], "paused": m["paused"],
         "host_key_fp": fingerprint(m["host_key"]), "pending_fp": fingerprint(m["pending_key"]),
         "prereq": loads(m["prereq"]), "facts": loads(m["facts"]), "connected": mid in S.ssh.conns,
         "interfaces": ifaces,
@@ -338,6 +339,32 @@ async def enqueue(j: JobsIn):
 @app.post("/api/jobs/{jid}/kill")
 async def kill(jid: str):
     asyncio.create_task(S.jobs.kill(jid))
+    return {"ok": True}
+
+
+@app.post("/api/machines/{mid}/pause")
+async def pause(mid: int):
+    await S.ssh.machine(mid)  # 404 if unknown
+    asyncio.create_task(S.jobs.pause(mid))  # killing takes a few seconds; UI updates over the WebSocket
+    return {"ok": True}
+
+
+@app.post("/api/machines/{mid}/resume")
+async def resume(mid: int):
+    await S.ssh.machine(mid)
+    await S.jobs.resume(mid)
+    return {"ok": True}
+
+
+@app.post("/api/pause-all")
+async def pause_all():
+    asyncio.create_task(S.jobs.pause_all())
+    return {"ok": True}
+
+
+@app.post("/api/resume-all")
+async def resume_all():
+    await S.jobs.resume_all()
     return {"ok": True}
 
 

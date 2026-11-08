@@ -5,9 +5,11 @@ import { useStore } from './store'
 import { describeId } from './Graph'
 
 export default function Toolbar() {
-  const { selected, run, showWeak, view, saveView, toggleHidden, graph, tags, jobs, notify, resetLayout, loadGraph } = useStore()
+  const { selected, run, showWeak, view, saveView, toggleHidden, graph, tags, jobs, machines, notify, resetLayout, loadGraph, loadState } = useStore()
   const rf = useReactFlow()
   const active = Object.values(jobs).filter((j) => j.status === 'running' || j.status === 'queued').length
+  const paused = machines.filter((m) => m.paused).length
+  const call = async (path, msg) => { try { await api(path, { method: 'POST' }); notify(msg, 'ok'); loadState() } catch (e) { notify(e.message) } }
 
   const runSelected = () => {
     const byMachine = {}
@@ -36,6 +38,9 @@ export default function Toolbar() {
     <div className="toolbar">
       <button className="primary" onClick={runSelected}>▶ Run selected</button>
       <button className="kill" onClick={masterKill} title="Kill every running scan and cancel the queue">■ MASTER KILL{active ? ` (${active})` : ''}</button>
+      <button onClick={() => call('/pause-all', 'Pausing: running scans go back to the queue')} disabled={!active}
+        title="Kill running scans (they go back to the queue as never started) and hold every queue">⏸ Pause all</button>
+      {paused > 0 && <button className="primary" onClick={() => call('/resume-all', 'Resumed')} title="Reconnect and continue every paused queue">▶ Resume all ({paused})</button>}
       <span className="sep" />
       <button onClick={resetLayout}>Layout reset</button>
       <label className="toggle"><input type="checkbox" checked={showWeak} onChange={(e) => useStore.setState({ showWeak: e.target.checked })} /> weak edges</label>
