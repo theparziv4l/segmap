@@ -9,7 +9,7 @@ export const useStore = create((set, get) => ({
   positions: {},
   layoutNonce: 0,
   showWeak: false,
-  hiddenTags: [],
+  view: { labels: {}, hidden: [] },  // display-only edits: renamed labels, hidden node/edge ids
   selectedEdge: null,
   selected: {},          // "mid|iface" -> true (interfaces ticked for "run selected")
   openJobs: [], activeJob: null, drawerOpen: true,
@@ -30,6 +30,13 @@ export const useStore = create((set, get) => ({
   loadGraphSoon: () => { clearTimeout(graphTimer); graphTimer = setTimeout(() => get().loadGraph(), 400) },
   loadPositions: async () => set({ positions: await api('/positions') }),
   savePositions: async (positions) => { set({ positions }); await api('/positions', { method: 'PUT', body: positions }) },
+
+  loadView: async () => set({ view: await api('/graph-view') }),
+  saveView: async (view) => { set({ view }); set({ view: await api('/graph-view', { method: 'PUT', body: view }) }) },
+  toggleHidden: (id) => {
+    const { view, saveView } = get()
+    saveView({ ...view, hidden: view.hidden.includes(id) ? view.hidden.filter((x) => x !== id) : [...view.hidden, id] })
+  },
 
   resetLayout: async () => { await get().savePositions({}); set((s) => ({ layoutNonce: s.layoutNonce + 1 })) },
 

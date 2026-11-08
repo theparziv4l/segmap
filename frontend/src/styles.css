@@ -124,3 +124,7 @@ tr.strong td:first-child { color: #4cc38a; }
 .toast { position: fixed; bottom: 16px; right: 16px; padding: 10px 14px; border-radius: 8px; max-width: 480px; z-index: 50; cursor: pointer; }
 .toast.error { background: #4a1719; border: 1px solid var(--red); }
 .toast.ok { background: #193b2d; border: 1px solid var(--green); }
+.ctxmenu { position: absolute; z-index: 30; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px; display: flex; flex-direction: column; gap: 2px; width: 230px; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+.ctxmenu input { margin-bottom: 4px; }
+.ctxmenu a { padding: 5px 8px; border-radius: 4px; color: var(--text); text-decoration: none; }
+.ctxmenu a:hover { background: #262833; }

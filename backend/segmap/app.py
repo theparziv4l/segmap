@@ -412,11 +412,39 @@ async def findings(machine_id: int, iface: str, block24: str):
 
 
 @app.delete("/api/findings")
-async def clear_findings():
-    await S.db.run("DELETE FROM findings")
-    await S.db.run("UPDATE jobs SET flags=NULL")
+async def clear_findings(machine_id: int | None = None, iface: str | None = None, block24: str | None = None):
+    """No params: clear everything. With machine_id+iface+block24: clear one graph edge. Audit log untouched."""
+    if machine_id is None:
+        await S.db.run("DELETE FROM findings")
+        await S.db.run("UPDATE jobs SET flags=NULL")
+    else:
+        if not iface or not block24:
+            raise ValueError("machine_id, iface and block24 are required together")
+        edge = (machine_id, iface, block24)
+        await S.db.run("DELETE FROM findings WHERE machine_id=? AND iface=? AND block24=?", edge)
+        await S.db.run("UPDATE jobs SET flags=NULL WHERE machine_id=? AND iface=? AND block24=?", edge)
     await S.hub.send({"type": "graph"})
     return {"ok": True}
+
+
+@app.delete("/api/blocks")
+async def del_block(cidr: str):
+    """Delete a /24 from the graph: its scope entries and findings. Audit log untouched."""
+    b = ip.IPv4Network(cidr)
+    if b.prefixlen != 24:
+        raise ValueError("block must be a /24")
+    ids = []
+    for r in await S.db.all("SELECT id, cidr FROM scope"):
+        n = ip.IPv4Network(r["cidr"])
+        if n.subnet_of(b):
+            ids.append(r["id"])
+        elif n.overlaps(b):
+            raise ValueError(f"{b} is part of scope entry {n}; edit that entry in the sidebar")
+    await S.db.many("DELETE FROM scope WHERE id=?", [(i,) for i in ids])
+    await S.db.run("DELETE FROM findings WHERE block24=?", (str(b),))
+    await S.db.run("UPDATE jobs SET flags=NULL WHERE block24=?", (str(b),))
+    await S.hub.send({"type": "graph"})
+    return {"scope_deleted": len(ids)}
 
 
 # ---------- positions ----------
@@ -430,6 +458,20 @@ async def put_positions(p: dict):
     clean = {str(k)[:200]: {"x": float(v["x"]), "y": float(v["y"])} for k, v in p.items()}
     await S.db.kv_set("positions", clean)
     return {"ok": True}
+
+
+# display-only graph edits: renamed labels and hidden node/edge ids (hidden = not rendered, not exported)
+@app.get("/api/graph-view")
+async def get_graph_view():
+    return await S.db.kv_get("graph_view", {"labels": {}, "hidden": []})
+
+
+@app.put("/api/graph-view")
+async def put_graph_view(v: dict):
+    clean = {"labels": {str(k)[:200]: str(t).strip()[:100] for k, t in (v.get("labels") or {}).items() if str(t).strip()},
+             "hidden": sorted({str(x)[:200] for x in v.get("hidden") or []})}
+    await S.db.kv_set("graph_view", clean)
+    return clean
 
 
 # ---------- exports ----------

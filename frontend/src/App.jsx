@@ -9,10 +9,10 @@ import EdgePanel from './EdgePanel'
 import JobDrawer from './JobDrawer'
 
 export default function App() {
-  const { loadState, loadGraph, loadPositions, loadGraphSoon, upsertJob, selectedEdge, pendingRun, run, toast } = useStore()
+  const { loadState, loadGraph, loadPositions, loadView, loadGraphSoon, upsertJob, selectedEdge, pendingRun, run, toast } = useStore()
 
   useEffect(() => {
-    const init = () => loadPositions().then(() => Promise.all([loadState(), loadGraph()])).catch((e) => useStore.getState().notify(e.message))
+    const init = () => Promise.all([loadPositions(), loadView()]).then(() => Promise.all([loadState(), loadGraph()])).catch((e) => useStore.getState().notify(e.message))
     init()
     connectWS({
       onOpen: init, // resync after reconnect (queue survives reloads and restarts)

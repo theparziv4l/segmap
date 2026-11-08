@@ -2,9 +2,10 @@ import { useReactFlow, getNodesBounds, getViewportForBounds } from '@xyflow/reac
 import { toPng, toSvg } from 'html-to-image'
 import { api, download } from './api'
 import { useStore } from './store'
+import { describeId } from './Graph'
 
 export default function Toolbar() {
-  const { selected, run, showWeak, hiddenTags, tags, jobs, notify, resetLayout, loadGraph } = useStore()
+  const { selected, run, showWeak, view, saveView, toggleHidden, graph, tags, jobs, notify, resetLayout, loadGraph } = useStore()
   const rf = useReactFlow()
   const active = Object.values(jobs).filter((j) => j.status === 'running' || j.status === 'queued').length
 
@@ -30,7 +31,6 @@ export default function Toolbar() {
       style: { width: `${w}px`, height: `${h}px`, transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})` } }
     download(`segmap-graph.${kind}`, await (kind === 'png' ? toPng(el, opts) : toSvg(el, opts)))
   }
-  const toggleTag = (t) => useStore.setState({ hiddenTags: hiddenTags.includes(t) ? hiddenTags.filter((x) => x !== t) : [...hiddenTags, t] })
 
   return (
     <div className="toolbar">
@@ -42,9 +42,18 @@ export default function Toolbar() {
       <span className="sep" />
       {[...tags.map((t) => t.name), 'unscoped'].map((t) => {
         const color = tags.find((x) => x.name === t)?.color || '#8b8d98'
-        return <button key={t} className={`tagchip ${hiddenTags.includes(t) ? 'off' : ''}`} style={{ borderColor: color, color }} onClick={() => toggleTag(t)}>{t}</button>
+        return <button key={t} className={`tagchip ${view.hidden.includes(`t:${t}`) ? 'off' : ''}`} style={{ borderColor: color, color }} onClick={() => toggleHidden(`t:${t}`)}>{t}</button>
       })}
       <span className="grow" />
+      {view.hidden.length > 0 && (
+        <div className="menu">
+          <button title="Hidden items are not drawn and not in PNG/SVG exports">Hidden ({view.hidden.length}) ▾</button>
+          <div className="menu-items">
+            {view.hidden.map((id) => <a key={id} onClick={() => toggleHidden(id)} title="Click to unhide">👁 {describeId(graph, view.labels, id)}</a>)}
+            <a onClick={() => saveView({ ...view, hidden: [] })}><b>Unhide all</b></a>
+          </div>
+        </div>
+      )}
       <div className="menu">
         <button>Export ▾</button>
         <div className="menu-items">

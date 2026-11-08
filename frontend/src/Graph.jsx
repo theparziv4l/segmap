@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ReactFlow, Background, Controls, MiniMap, Handle, Position, MarkerType, useReactFlow, useNodesState, useEdgesState } from '@xyflow/react'
 import ELK from 'elkjs/lib/elk.bundled.js'
+import { api } from './api'
 import { useStore } from './store'
 
 const elk = new ELK()
@@ -13,26 +14,29 @@ export const nodeId = {
   machine: (id) => `m:${id}`, iface: (mid, name) => `i:${mid}|${name}`, tag: (t) => `t:${t}`, block: (c) => `b:${c}`,
 }
 
-function MachineNode({ data }) {
-  return <div className="g-label"><b>{data.name}</b> <span className="mono">{data.host}</span> <span className={`dot st-${data.status}`} /></div>
+const useLabel = (id, fallback) => useStore((s) => s.view.labels[id]) || fallback
+
+function MachineNode({ id, data }) {
+  return <div className="g-label"><b>{useLabel(id, data.name)}</b> <span className="mono">{data.host}</span> <span className={`dot st-${data.status}`} /></div>
 }
-function TagNode({ data }) {
-  return <div className="g-label" style={{ color: data.color }}><b>{data.tag}</b> <span className="muted">{data.count} × /24</span></div>
+function TagNode({ id, data }) {
+  return <div className="g-label" style={{ color: data.color }}><b>{useLabel(id, data.tag)}</b> <span className="muted">{data.count} × /24</span></div>
 }
-function IfaceNode({ data }) {
+function IfaceNode({ id, data }) {
   return (
     <div className="n-iface">
-      <div><b>{data.name}</b> <span className="mono">{data.ipv4}</span></div>
+      <div><b>{useLabel(id, data.name)}</b> <span className="mono">{data.ipv4}</span></div>
       <span className="zone" style={{ background: data.zoneColor || '#33353f' }}>{data.zone || 'zone ?'}</span>
       <Handle type="source" position={Position.Bottom} />
     </div>
   )
 }
-function BlockNode({ data }) {
+function BlockNode({ id, data }) {
+  const label = useLabel(id, data.cidr)
   return (
     <div className={`n-block ${data.violation ? 'violation' : ''} ${data.scanned ? '' : 'unscanned'}`} style={{ borderColor: data.color }}>
       <Handle type="target" position={Position.Top} />
-      <div className="mono"><b>{data.cidr}</b></div>
+      <div className="mono"><b>{label}</b></div>
       <div className="small" style={{ color: data.color }}>{data.tag}</div>
       {data.flags.length > 0 && (
         <div className="flags" title={data.flags.map((f) => `${f.iface}: ${f.message}`).join('\n')}>⚑ {[...new Set(data.flags.map((f) => f.code))].join(', ')}</div>
@@ -42,19 +46,37 @@ function BlockNode({ data }) {
 }
 const nodeTypes = { machine: MachineNode, tagGroup: TagNode, iface: IfaceNode, block: BlockNode }
 
-function visibleEdges(graph, hiddenTags, showWeak) {
-  const blockTag = Object.fromEntries(graph.blocks.map((b) => [b.cidr, b.tag]))
-  const ifaceSet = new Set(graph.machines.flatMap((m) => m.interfaces.map((i) => nodeId.iface(m.id, i.name))))
-  return graph.edges.filter((e) => (e.strong_hosts > 0 || (showWeak && e.weak_hosts > 0))
-    && !hiddenTags.includes(blockTag[e.block24]) && ifaceSet.has(nodeId.iface(e.machine_id, e.iface)))
+// Drop hidden nodes before layout: hidden = not rendered, so not in PNG/SVG export either.
+function prune(graph, hidden) {
+  const machines = graph.machines.filter((m) => !hidden.has(nodeId.machine(m.id)))
+    .map((m) => ({ ...m, interfaces: m.interfaces.filter((i) => !hidden.has(nodeId.iface(m.id, i.name))) }))
+  const blocks = graph.blocks.filter((b) => !hidden.has(nodeId.block(b.cidr)) && !hidden.has(nodeId.tag(b.tag)))
+  return { ...graph, machines, blocks, hidden }
 }
 
-async function layout(graph, hiddenTags, showWeak) {
+function visibleEdges(graph, showWeak) {
+  const blockSet = new Set(graph.blocks.map((b) => b.cidr))
+  const ifaceSet = new Set(graph.machines.flatMap((m) => m.interfaces.map((i) => nodeId.iface(m.id, i.name))))
+  return graph.edges.filter((e) => (e.strong_hosts > 0 || (showWeak && e.weak_hosts > 0)) && !graph.hidden.has(e.id)
+    && blockSet.has(e.block24) && ifaceSet.has(nodeId.iface(e.machine_id, e.iface)))
+}
+
+// Human-readable name for a node/edge id (hidden list in the toolbar).
+export function describeId(graph, labels, id) {
+  const mname = (mid) => graph.machines.find((m) => String(m.id) === String(mid))?.name || `machine ${mid}`
+  const [kind, rest] = id.includes(':') ? [id.slice(0, 1), id.slice(2)] : ['e', id]
+  const base = { m: () => mname(rest), i: () => `${mname(rest.split('|')[0])} · ${rest.split('|')[1]}`,
+    t: () => `${rest} (group)`, b: () => rest,
+    e: () => { const [mid, iface, b] = id.split('|'); return `${mname(mid)} · ${iface} → ${b}` } }[kind]?.() || id
+  return labels[id] ? `${labels[id]} (${base})` : base
+}
+
+async function layout(graph, showWeak) {
   const tagColor = Object.fromEntries(graph.tags.map((t) => [t.name, t.color]))
   const tagRank = Object.fromEntries(graph.tags.map((t) => [t.name, t.rank]))
   const groups = {}
-  graph.blocks.filter((b) => !hiddenTags.includes(b.tag)).forEach((b) => (groups[b.tag] ||= []).push(b))
-  const edges = visibleEdges(graph, hiddenTags, showWeak)
+  graph.blocks.forEach((b) => (groups[b.tag] ||= []).push(b))
+  const edges = visibleEdges(graph, showWeak)
   const elkGraph = {
     id: 'root',
     layoutOptions: {
@@ -104,12 +126,12 @@ async function layout(graph, hiddenTags, showWeak) {
   return { nodes, edges }
 }
 
-function toFlowEdge(e, selectedId) {
+function toFlowEdge(e, selectedId, labels) {
   const strong = e.strong_hosts > 0
   const color = strong ? SEV[e.severity] || SEV.info : SEV.none
-  const label = strong
+  const label = labels[e.id] || (strong
     ? `${e.strong_hosts}h · ${e.strong_ports}p${e.issues ? ` · ⚠${e.issues}` : ''}`
-    : `${e.weak_hosts} weak (unverified)`
+    : `${e.weak_hosts} weak (unverified)`)
   return {
     id: e.id, source: nodeId.iface(e.machine_id, e.iface), target: nodeId.block(e.block24), data: e, label,
     animated: false, selected: e.id === selectedId,
@@ -121,20 +143,23 @@ function toFlowEdge(e, selectedId) {
 }
 
 export default function Graph() {
-  const { graph, hiddenTags, showWeak, savePositions, selectedEdge, layoutNonce } = useStore()
+  const { graph, view, showWeak, savePositions, selectedEdge, layoutNonce } = useStore()
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
   const [raw, setRaw] = useState([])
+  const [menu, setMenu] = useState(null)
+  const box = useRef(null)
   const rf = useReactFlow()
+  const shown = useMemo(() => prune(graph, new Set(view.hidden)), [graph, view.hidden])
   const structure = useMemo(() => JSON.stringify({
-    m: graph.machines.map((m) => [m.id, m.interfaces.map((i) => i.name)]), b: graph.blocks.map((b) => b.cidr),
-    e: visibleEdges(graph, hiddenTags, showWeak).map((e) => e.id), hiddenTags, showWeak,
-  }), [graph, hiddenTags, showWeak])
+    m: shown.machines.map((m) => [m.id, m.interfaces.map((i) => i.name)]), b: shown.blocks.map((b) => b.cidr),
+    e: visibleEdges(shown, showWeak).map((e) => e.id), showWeak,
+  }), [shown, showWeak])
 
   // re-layout only when the structure changes; data-only updates patch nodes in place
   useEffect(() => {
     let cancel = false
-    layout(graph, hiddenTags, showWeak).then(({ nodes: n, edges: e }) => {
+    layout(shown, showWeak).then(({ nodes: n, edges: e }) => {
       if (cancel) return
       const { positions } = useStore.getState()
       setNodes(n.map((x) => (positions[x.id] ? { ...x, position: positions[x.id] } : x)))
@@ -154,7 +179,7 @@ export default function Graph() {
     setRaw((r) => r.map((e) => edgeData[e.id] || e))
   }, [graph])
 
-  useEffect(() => { setEdges(raw.map((e) => toFlowEdge(e, selectedEdge?.id))) }, [raw, selectedEdge])
+  useEffect(() => { setEdges(raw.map((e) => toFlowEdge(e, selectedEdge?.id, view.labels))) }, [raw, selectedEdge, view.labels])
 
   const onNodeDragStop = (_, node, dragged) => {
     const next = { ...useStore.getState().positions }
@@ -162,19 +187,65 @@ export default function Graph() {
     savePositions(next)
   }
 
+  const openMenu = (ev, item, kind) => {
+    ev.preventDefault()
+    const r = box.current.getBoundingClientRect()
+    setMenu({ id: item.id, kind, data: item.data, x: ev.clientX - r.left, y: ev.clientY - r.top })
+  }
+
   return (
-    <div className="graph" id="graph">
+    <div className="graph" id="graph" ref={box}>
       <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes} onNodeDragStop={onNodeDragStop} minZoom={0.1} proOptions={{ hideAttribution: true }}
-        onEdgeClick={(_, e) => useStore.setState({ selectedEdge: e.data })} onPaneClick={() => useStore.setState({ selectedEdge: null })}
+        deleteKeyCode={null}
+        onNodeContextMenu={(ev, n) => openMenu(ev, n, n.type)} onEdgeContextMenu={(ev, e) => openMenu(ev, e, 'edge')}
+        onEdgeClick={(_, e) => useStore.setState({ selectedEdge: e.data })}
+        onPaneClick={() => { setMenu(null); useStore.setState({ selectedEdge: null }) }} onMoveStart={() => setMenu(null)}
         colorMode="dark">
         <Background gap={24} color="#24262e" />
         <Controls showInteractive={false} />
         <MiniMap pannable zoomable nodeColor={(n) => (n.type === 'block' ? n.data.color : n.type === 'iface' ? '#9aa0b0' : 'transparent')} />
       </ReactFlow>
+      {menu && <ItemMenu key={menu.id} menu={menu} close={() => setMenu(null)} />}
       {!graph.machines.length && !graph.blocks.length && (
         <div className="empty">Add a test machine and a scope on the left. Interfaces appear on top, tagged /24 networks below; arrows mean strong evidence of reachability.</div>
       )}
+    </div>
+  )
+}
+
+const DEFAULT_LABEL = { machine: (d) => d.name, iface: (d) => d.name, tagGroup: (d) => d.tag, block: (d) => d.cidr, edge: () => '' }
+
+// Right-click menu: rename / hide are display-only; delete removes real data (audit log is never touched).
+function ItemMenu({ menu, close }) {
+  const { view, saveView, toggleHidden, notify, loadState, loadGraph } = useStore()
+  const [text, setText] = useState(view.labels[menu.id] || '')
+  const [armed, setArmed] = useState(false)
+  const d = menu.data
+  const del = {
+    machine: { what: 'machine with its interfaces, jobs and findings', go: () => api(`/machines/${d.id}`, { method: 'DELETE' }) },
+    block: { what: 'scope entries and findings of this /24', go: () => api(`/blocks?cidr=${encodeURIComponent(d.cidr)}`, { method: 'DELETE' }) },
+    edge: { what: "this edge's findings", go: () => api(`/findings?${new URLSearchParams({ machine_id: d?.machine_id, iface: d?.iface, block24: d?.block24 })}`, { method: 'DELETE' }) },
+  }[menu.kind]
+
+  const rename = () => {
+    const labels = { ...view.labels }
+    if (text.trim()) labels[menu.id] = text.trim(); else delete labels[menu.id]
+    saveView({ ...view, labels }); close()
+  }
+  const remove = async () => {
+    if (!armed) return setArmed(true)
+    close()
+    try { await del.go(); notify(`Deleted ${del.what}`, 'ok') } catch (e) { notify(e.message) }
+    await Promise.all([loadState(), loadGraph()])
+  }
+  return (
+    <div className="ctxmenu" style={{ left: menu.x, top: menu.y }} onContextMenu={(e) => e.preventDefault()}>
+      <input autoFocus value={text} placeholder={DEFAULT_LABEL[menu.kind]?.(d) || 'label'} onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') rename(); if (e.key === 'Escape') close() }} />
+      <a onClick={rename}>{text.trim() ? 'Rename' : 'Reset name'}</a>
+      <a onClick={() => { toggleHidden(menu.id); close() }}>Hide</a>
+      {del && <a className="danger-text" onClick={remove}>{armed ? `Click again: delete ${del.what}` : 'Delete…'}</a>}
     </div>
   )
 }
