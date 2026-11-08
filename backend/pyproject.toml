@@ -1,0 +1,14 @@
+[project]
+name = "segmap"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["fastapi", "uvicorn[standard]", "asyncssh", "aiosqlite", "pydantic>=2", "python-multipart"]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-asyncio", "httpx"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_default_fixture_loop_scope = "function"

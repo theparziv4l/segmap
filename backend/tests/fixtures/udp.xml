@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -n -Pn -sU -e eth0 -T3 -p 53,123,161,500 --reason -oX x 10.24.5.0/24" start="1794018885" startstr="Sat Nov  7 05:34:45 2026" version="7.99" xmloutputversion="1.05">
+<scaninfo type="udp" protocol="udp" numservices="4" services="53,123,161,500"/>
+<verbose level="0"/>
+<debugging level="0"/>
+<host starttime="1794018885" endtime="1794018900"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="10.24.5.53" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<ports><port protocol="udp" portid="53"><state state="open" reason="udp-response" reason_ttl="63"/><service name="domain" method="table" conf="3"/></port>
+<port protocol="udp" portid="123"><state state="open|filtered" reason="no-response" reason_ttl="0"/><service name="ntp" method="table" conf="3"/></port>
+<port protocol="udp" portid="161"><state state="closed" reason="port-unreach" reason_ttl="63"/><service name="snmp" method="table" conf="3"/></port>
+<port protocol="udp" portid="500"><state state="open|filtered" reason="no-response" reason_ttl="0"/><service name="isakmp" method="table" conf="3"/></port>
+</ports>
+<times srtt="900" rttvar="300" to="100000"/>
+</host>
+<runstats><finished time="1794018999" timestr="Sat Nov  7 05:36:39 2026" elapsed="114.00" exit="success"/><hosts up="1" down="255" total="256"/>
+</runstats>
+</nmaprun>

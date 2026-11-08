@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -n -sn -PE -PP --disable-arp-ping -e eth0 -T3 --reason -oX x 10.24.7.0/24" start="1794018885" startstr="Sat Nov  7 05:34:45 2026" version="7.99" xmloutputversion="1.05">
+<verbose level="0"/>
+<debugging level="0"/>
+<host starttime="1794018885" endtime="1794018900"><status state="up" reason="echo-reply" reason_ttl="255"/>
+<address addr="10.24.7.1" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<times srtt="900" rttvar="300" to="100000"/>
+</host>
+<host starttime="1794018885" endtime="1794018900"><status state="up" reason="echo-reply" reason_ttl="63"/>
+<address addr="10.24.7.10" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<times srtt="900" rttvar="300" to="100000"/>
+</host>
+<host starttime="1794018885" endtime="1794018900"><status state="up" reason="timestamp-reply" reason_ttl="127"/>
+<address addr="10.24.7.11" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<times srtt="900" rttvar="300" to="100000"/>
+</host>
+<host starttime="1794018885" endtime="1794018900"><status state="up" reason="echo-reply" reason_ttl="63"/>
+<address addr="10.24.7.12" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<times srtt="900" rttvar="300" to="100000"/>
+</host>
+<runstats><finished time="1794018999" timestr="Sat Nov  7 05:36:39 2026" elapsed="114.00" exit="success"/><hosts up="4" down="252" total="256"/>
+</runstats>
+</nmaprun>

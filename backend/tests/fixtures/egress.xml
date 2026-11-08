@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -n -Pn -sS -e eth0 -T3 -p 22,80,443,8443 --script banner --reason -oX x 203.0.113.10" start="1794018885" startstr="Sat Nov  7 05:34:45 2026" version="7.99" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="4" services="22,80,443,8443"/>
+<verbose level="0"/>
+<debugging level="0"/>
+<host starttime="1794018885" endtime="1794018900"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="203.0.113.10" addrtype="ipv4"/>
+<hostnames>
+</hostnames>
+<ports><port protocol="tcp" portid="22"><state state="open" reason="syn-ack" reason_ttl="50"/><service name="ssh" method="table" conf="3"/><script id="banner" output="SSH-2.0-OpenSSH_9.6"/></port>
+<port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" method="table" conf="3"/></port>
+<port protocol="tcp" portid="443"><state state="open" reason="syn-ack" reason_ttl="50"/><service name="https" method="table" conf="3"/><script id="banner" output="SEGMAP-EGRESS tok123"/></port>
+<port protocol="tcp" portid="8443"><state state="filtered" reason="no-response" reason_ttl="0"/><service name="https-alt" method="table" conf="3"/></port>
+</ports>
+<times srtt="900" rttvar="300" to="100000"/>
+</host>
+<runstats><finished time="1794018999" timestr="Sat Nov  7 05:36:39 2026" elapsed="114.00" exit="success"/><hosts up="1" down="0" total="1"/>
+</runstats>
+</nmaprun>
